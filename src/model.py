@@ -1,11 +1,6 @@
 import numpy as np
 import pandas as pd
 import os
-import sys
-import pickle
-from numba import njit
-from functools import lru_cache
-from IPython.display import Audio, display
 from sklearn.preprocessing import OrdinalEncoder
 import random
 import torch
@@ -16,10 +11,9 @@ from matplotlib import pyplot as plt
 
 data_dir = os.path.join(os.getcwd(), "data")
 
-def get_data(recompute, direction):
-    # data_dir = os.path.join(os.getcwd(), "data")
-    lstm_dir = os.path.join(data_dir, "trips_for_lstm")
 
+def get_data(recompute, direction):
+    lstm_dir = os.path.join(data_dir, "trips_for_lstm")
     trips, dates, labels = None, None, None
     files = [
         f"{f}_direction_{direction}.npy"
@@ -32,16 +26,14 @@ def get_data(recompute, direction):
 
         pickle_path = os.path.join(data_dir, "mega_pickle")
         df = pd.read_pickle(pickle_path)
-        #     df = df.head(100000)
+        df = df.head(1000)
 
-        df = df.drop(
-            columns=["route_number", "time_cat_stop_time", "time_cat_leave_time"]
-        )
+        df = df[df["direction"] == direction]
 
         df = df.sort_values(["service_date", "train", "trip_number", "stop_time"])
         df = df.reset_index(drop=True)
 
-        df = df[df["direction"] == direction]
+        df = df.drop(columns=['route_number',"service_date", "arrive_time", "leave_time", "stop_time"])
 
         dtypes = df.dtypes
         category_names = dtypes[dtypes == "category"]
@@ -52,13 +44,29 @@ def get_data(recompute, direction):
         # non_category_names.remove("arrival_deviance")
         label_names = ["arrival_deviance"]
 
+        time = df['arrive_timestamp'].view(int)
+        time = (time - time.mean()) / time.std()
+        df = df.drop(columns=['arrive_timestamp',"stop_timestamp", "leave_timestamp"])
+
         enc = OrdinalEncoder()
         df[category_names] = enc.fit_transform(df[category_names])
         df[category_names] = df[category_names].astype(np.int32)
 
-        df[non_category_names] = (
-            df[non_category_names] - df[non_category_names].mean()
-        ) / df[non_category_names].std()
+        df[non_category_names] = df[non_category_names].mask(
+            np.abs(
+                (df[non_category_names] - df[non_category_names].mean(axis=0))
+                / df[non_category_names].std(axis=0)
+            )
+            > 4,
+            np.nan,
+        )
+        df[non_category_names] = df[non_category_names].interpolate(axis=0)
+        df[non_category_names] = df[non_category_names].ffill(axis=0)
+        df[non_category_names] = df[non_category_names].bfill(axis=0)
+
+        # df[non_category_names] = (
+        #     df[non_category_names] - df[non_category_names].mean()
+        # ) / df[non_category_names].std()
 
         non_category_names.remove("arrival_deviance")
 
@@ -181,14 +189,14 @@ class bus_dataset(torch.utils.data.Dataset):
         return (non_category, category, r), label
 
 
-batch_size = 32
+batch_size = 16
 worker_count = 12
 
-dataset = bus_dataset(recompute=False, direction=1, batch_size=batch_size)
+dataset = bus_dataset(recompute=True, direction=1, batch_size=batch_size)
 
-train = 0.6
-val = 0.3
-test = 0.1
+train = 0.8
+val = 0.17
+test = 0.03
 assert round(train + val + test) == 1
 
 datalen = len(dataset)
@@ -248,12 +256,12 @@ class LSTM(pytorch_lightning.core.lightning.LightningModule):
         self.data = data
         self.learning_rate = learning_rate
         self.lr = learning_rate
-
-        self.hidden_width = 64
         self.embedding_scale = 4
+        self.kernel_size = 8
+        self.conv_channels = 32
 
         self.embedding_outs = [
-            card // self.embedding_scale + 2 for card in data.cardinality
+            card // self.embedding_scale + 1 for card in data.cardinality
         ]
         self.embeddings = torch.nn.ModuleList(
             [
@@ -264,23 +272,27 @@ class LSTM(pytorch_lightning.core.lightning.LightningModule):
         self.total_cat_out = sum(self.embedding_outs)
         self.cat_and_non_cat_width = self.total_cat_out + self.data.non_category_width
 
-        self.norm = torch.nn.BatchNorm1d(self.cat_and_non_cat_width)
+        self.norm_inputs = torch.nn.BatchNorm1d(self.cat_and_non_cat_width)
+        self.norm_1 = torch.nn.BatchNorm1d(self.conv_channels)
+        self.norm_2 = torch.nn.BatchNorm1d(self.conv_channels)
 
-        # self.lstm_1 = torch.nn.LSTM(
-        #     self.cat_and_non_cat_width, self.lstm_1_width, batch_first=True, num_layers=4
-        # )
+        self.reduce = torch.nn.Linear(self.cat_and_non_cat_width, self.conv_channels)
 
-        self.gru = torch.nn.GRU(
-            self.cat_and_non_cat_width,
-            self.hidden_width,
-            batch_first=True,
-            num_layers=4,
+        self.conv_1 = torch.nn.Conv1d(
+            self.conv_channels, self.conv_channels, self.kernel_size, padding="same"
         )
-
-        self.conv_1 = torch.nn.Conv1d(self.cat_and_non_cat_width, 16, 16, padding='valid')
-        self.conv_2 = torch.nn.Conv1d(16, 1, 16, padding='valid')
-
-        # self.lstm_to_outs = torch.nn.Linear(self.hidden_width, 1)
+        self.conv_2 = torch.nn.Conv1d(
+            self.conv_channels, self.conv_channels, self.kernel_size, padding="same"
+        )
+        self.conv_3 = torch.nn.Conv1d(
+            self.conv_channels, self.conv_channels, self.kernel_size, padding="same"
+        )
+        self.conv_4 = torch.nn.Conv1d(
+            self.conv_channels, self.conv_channels, self.kernel_size, padding="same"
+        )
+        self.conv_5 = torch.nn.Conv1d(
+            self.conv_channels, 1, self.kernel_size, padding="same"
+        )
 
         self.loss = torch.nn.MSELoss()
 
@@ -292,22 +304,35 @@ class LSTM(pytorch_lightning.core.lightning.LightningModule):
         outs = [embedding(cat) for cat, embedding in zip(x, self.embeddings)]
 
         x = torch.cat([*outs, non_category], dim=2)
-        print(x.shape)
-        x = x.permute(0,2,1)
-        print(x.shape)
-        # x = normalize_on_axis(x, self.norm, 2)
-        x = self.norm(x)
-        print(x.shape)
+        x = x.permute(0, 2, 1)
+        x = self.norm_inputs(x)
+        x = x.permute(0, 2, 1)
+        x = self.reduce(x)
+        x_1 = x.permute(0, 2, 1)
 
-        # x, state = self.lstm_1(x)
-        # x, state = self.gru(x)
-        print(x.shape)
-        x = self.conv_1(x)
+        x = self.conv_1(x_1)
         x = self.conv_2(x)
-        print('post conv', x.shape)
-        assert 2 == 3
-        # x = self.lstm_to_outs(x)
+        x = torch.add(x, x_1)
+        x_2 = self.norm_1(x)
+
+        x = self.conv_3(x_2)
+        x = self.conv_4(x)
+        x = torch.add(x, x_2)
+        x = self.norm_2(x)
+
+        x = self.conv_5(x)
+
+        x = x.permute(0, 2, 1)
+
         return x
+
+    def configure_optimizers(self):
+        return torch.optim.SGD(
+            self.parameters(),
+            lr=(self.lr or self.learning_rate),
+            momentum=0.9,
+            weight_decay=0.5,
+        )
 
     def training_step(self, batch, batch_idx):
         x, y = batch
@@ -328,14 +353,11 @@ class LSTM(pytorch_lightning.core.lightning.LightningModule):
         y_hat = self(x)
         return y_hat
 
-    def configure_optimizers(self):
-        return torch.optim.Adam(self.parameters(), lr=(self.lr or self.learning_rate))
 
-
-model = LSTM(data=dataset, learning_rate=0.001)
+model = LSTM(data=dataset, learning_rate=0.0001)
 
 early_stop_callback = pytorch_lightning.callbacks.early_stopping.EarlyStopping(
-    monitor="val_loss", min_delta=0.00, patience=3, verbose=False, mode="min"
+    monitor="val_loss", min_delta=0.00, patience=20, verbose=False, mode="min"
 )
 
 checkpoint_callback = pytorch_lightning.callbacks.ModelCheckpoint(
@@ -351,14 +373,14 @@ trainer = pytorch_lightning.Trainer(
 
 # trainer.tune(model, train_dataloader=train_loader, val_dataloaders=val_loader)
 
-trainer.fit(model, train_loader, val_loader)
+# trainer.fit(model, train_loader, val_loader)
 
 checkpoint_callback.best_model_path
-
-preds = trainer.predict(model, test_loader)
-plot_dir = os.path.join(data_dir, 'plots')
+plot_loader = val_loader
+preds = trainer.predict(model, plot_loader)
+plot_dir = os.path.join(data_dir, "plots")
 plot_per_batch = 1
-for i, (pred_batch, loader_batch) in enumerate(zip(preds, test_loader)):
+for i, (pred_batch, loader_batch) in enumerate(zip(preds, plot_loader)):
     if i % 5 == 0:
         (non_category_batch, category_batch, r_batch), label_batch = loader_batch
         for r, label, pred in zip(
@@ -375,9 +397,7 @@ for i, (pred_batch, loader_batch) in enumerate(zip(preds, test_loader)):
 
             num_samples = r
             samp_x = [0] * num_samples
-            # print(pred)
-            # print(label)
-            # plt.rcParams["figure.figsize"] = [20, 4]
+            plt.rcParams["figure.figsize"] = [20, 4]
             plt.scatter(x, pred, label="pred")
             plt.scatter(x, label, label="y")
             plt.scatter(list(range(num_samples)), samp_x, label="samp")
