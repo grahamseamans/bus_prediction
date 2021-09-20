@@ -22,7 +22,7 @@ def get_data(recompute, direction):
 
         pickle_path = os.path.join(data_dir, "mega_pickle")
         df = pd.read_pickle(pickle_path)
-        # df = df.head(1000)
+        df = df.head(50000)
 
         df = df[df["direction"] == direction]
 
