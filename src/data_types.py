@@ -21,4 +21,4 @@ class Model_Params:
     kernel_size: int = 8
     conv_channels: int = 16
     batch_size: int = 16
-    epochs: int = 50
+    epochs: int = 2
