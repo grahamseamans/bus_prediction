@@ -5,7 +5,7 @@ import numpy as np
 import pickle
 import random
 from sklearn.preprocessing import OrdinalEncoder
-from tqdm import tqdm
+# from tqdm import tqdm
 
 data_dir = os.path.join(os.getcwd(), "data")
 

@@ -15,4 +15,5 @@ Sometimes JAX doesn't kill the process properly if I KeyboardInterrupt my way ou
 
 or just
 * killall run.py
+* killall python 
 
