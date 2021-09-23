@@ -5,6 +5,7 @@ import numpy as np
 import pickle
 import random
 from sklearn.preprocessing import OrdinalEncoder
+from tqdm import tqdm
 
 data_dir = os.path.join(os.getcwd(), "data")
 
@@ -22,7 +23,6 @@ def get_data(recompute, direction):
 
         pickle_path = os.path.join(data_dir, "mega_pickle")
         df = pd.read_pickle(pickle_path)
-        df = df.head(50000)
 
         df = df[df["direction"] == direction]
 
@@ -157,7 +157,12 @@ def get_data(recompute, direction):
         for i, stop in enumerate(cannonical_stop_seq):
             stop_order_dict[stop] = i
 
-        for i, trip in enumerate(trips):
+        for i, trip in tqdm(
+            enumerate(trips),
+            total=len(trips),
+            unit="trip",
+            desc="making cannonical trips",
+        ):
             trip = trip.drop_duplicates("location_id")
 
             seq = np.array([cannonical_stop_seq, list(range(data_info.trip_length))])
@@ -168,6 +173,7 @@ def get_data(recompute, direction):
             trip = trip.sort_values(by="idx")
             trip = trip.reset_index(drop=True)
             trip = trip.drop(columns=["idx"])
+            trip = trip.fillna(0)  # essential! the join was (reasonably) making nans!
             trips[i] = trip
 
         datas = [trips, data_info]

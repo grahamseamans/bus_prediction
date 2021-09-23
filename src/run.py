@@ -1,9 +1,5 @@
-import os
-import random
-import torch
 from data_types import Data_Info, Model_Params
 from matplotlib import pyplot as plt
-from model import get_model
 from data_read_parse import get_data
 from absl import app
 import haiku as hk
@@ -11,81 +7,87 @@ import jax
 import jax.numpy as jnp
 import numpy as np
 import optax
-from typing import Generator, Mapping, Tuple
-import numbers
+from typing import Tuple
 from data import get_dataloaders
+from tqdm import tqdm
 
 Batch = Tuple
 mp = Model_Params()
 
 
-# https://github.com/deepmind/optax/blob/master/examples/quick_start.ipynb
+class CustomModule(hk.Module):
+    def __init__(self, data_info):
+        super(CustomModule, self).__init__()
+        self.data_info = data_info
+
+    def __call__(self, X, is_training: bool) -> jnp.ndarray:
+        (non_category, category, r) = X
+        x = hk.BatchNorm(True, True, decay_rate=0.9)(non_category, is_training)
+        x = hk.Flatten()(x)
+        x = hk.Linear(300)(x)
+        x = jax.nn.relu(x)
+        x = hk.Linear(100)(x)
+        x = jax.nn.relu(x)
+        x = hk.Linear(self.data_info.trip_length)(x)
+        return x
 
 
 def main(_):
     train_loader, val_loader, test_loader, data_info = get_dataloaders(mp)
 
-    def net_fn(batch: Batch) -> jnp.ndarray:
-        (non_category, category, r) = batch
-        # https://dm-haiku.readthedocs.io/en/latest/api.html#causal
-        mlp = hk.Sequential(
-            [
-                hk.Flatten(),
-                hk.Linear(300),
-                jax.nn.relu,
-                hk.Linear(100),
-                jax.nn.relu,
-                hk.Linear(data_info.trip_length),
-            ]
-        )
-        return mlp(non_category)
-
-    net = hk.without_apply_rng(hk.transform(net_fn))
-    xs, ys = next(iter(val_loader))
-    params = net.init(jax.random.PRNGKey(42), xs)
-
     start_learning_rate = 1e-1
-
     scheduler = optax.exponential_decay(
         init_value=start_learning_rate, transition_steps=1000, decay_rate=0.99
     )
-
     gradient_transform = optax.chain(
-        optax.clip_by_global_norm(1.0),  # Clip by the gradient by the global norm.
-        optax.scale_by_adam(),  # Use the updates from adam.
-        optax.scale_by_schedule(scheduler),  # Use the learning rate from the scheduler.
+        optax.clip_by_global_norm(1.0),
+        optax.scale_by_adam(),
+        # optax.scale_by_schedule(scheduler),
+        optax.scale(mp.learning_rate),
         optax.scale(-1.0),
-        # Scale updates by -1 since optax.apply_updates is additive and we want to descend on the loss.
     )
+    # gradient_transform = optax.sgd(1e-3)
 
-    # optimizer = optax.adam(1e-2)
-    # opt_state = optimizer.init(params)
+    def _forward(data_info: Data_Info, X, is_training: bool) -> jnp.ndarray:
+        net = CustomModule(data_info)
+        return net(X, is_training)
 
+    forward = hk.without_apply_rng(hk.transform_with_state(_forward))
+    Xs, ys = next(iter(val_loader))
+    params, state = forward.init(jax.random.PRNGKey(42), data_info, Xs, True)
     opt_state = gradient_transform.init(params)
 
-    def compute_loss(params, x, y):
-        y_pred = net.apply(params, x)
-        y = jnp.squeeze(y)
-        y_pred = np.squeeze(y_pred)
-        print(y_pred[0])
-        print(y[0])
-        loss = jnp.mean(optax.l2_loss(y_pred, y))
-        return loss
+    @jax.jit
+    def compute_loss(params, state, X, y, is_training=True):
+        y_pred, state = forward.apply(params, state, data_info, X, is_training)
+        y, y_pred = [jnp.squeeze(x) for x in [y, y_pred]]
+        return jnp.mean(optax.huber_loss(y_pred, y))
+
+    def prog_bar(iterable, desc):
+        return tqdm(total=len(iterable), desc=desc, unit="batch")
 
     for epoch in range(mp.epochs):
-        for xs, ys in train_loader:
-            loss = compute_loss(params, xs, ys)
-            print(loss)
-            grads = jax.grad(compute_loss)(params, xs, ys)
-            updates, opt_state = gradient_transform.update(grads, opt_state)
-            params = optax.apply_updates(params, updates)
-        for xs, ys in val_loader:
-            loss = compute_loss(params, xs, ys)
-            print(loss)
+        train_loss = []
+        with prog_bar(train_loader, desc="training: ") as bar:
+            for batch_idx, (Xs, ys) in enumerate(train_loader):
+                loss = compute_loss(params, state, Xs, ys, True)
+                train_loss.append(loss)
+                grads = jax.grad(loss)(params, state, Xs, ys, True)
+                updates, opt_state = gradient_transform.update(grads, opt_state)
+                params = optax.apply_updates(params, updates)
+                bar.update(1)
+                bar.set_postfix({'loss': sum(train_loss)/batch_idx})
+        val_loss = []
+        with prog_bar(val_loader, desc="validation: ") as bar:
+            for i, (Xs, ys) in enumerate(val_loader):
+                val_loss.append(compute_loss(params, state, Xs, ys, False))
+                bar.update(1)
+                bar.set_postfix({'loss': sum(val_loss)/batch_idx})
 
 
 if __name__ == "__main__":
-    app.run(main)
+    # app.run(main)
+    main("banana")
 
 """
 I can just run preds on test_data that I get out of randomsplit

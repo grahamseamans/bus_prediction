@@ -100,7 +100,7 @@ def parse_stop_event(df):
         df["stop_time"], unit="s"
     )
 
-    df.drop(columns=["service_date", "arrive_time", "leave_time", "stop_time"])
+    # df.drop(columns=["service_date", "arrive_time", "leave_time", "stop_time"])
 
     df["arrival_deviance"] = df["stop_time"] - df["arrive_time"]
     df["arrive_deviance_departure_delta"] = (
@@ -112,14 +112,14 @@ def parse_stop_event(df):
 
 stop_event_file_names = [
     "2 trimet_stop_event - Sep 2020 to Mar 2021.csv",
-    # "2 trimet_stop_event - Aug 31 and Sep 1 2020.csv",
-    # "2 trimet_stop_event - Fall 2019.csv",
-    # "2 trimet_stop_event - Mar to Aug 2020.csv",
-    # "2 trimet_stop_event - Spring 2019.csv",
-    # "2 trimet_stop_event - Summer 2019.csv",
-    # "2 trimet_stop_event - Winter 2018.csv",
-    # "2 trimet_stop_event - Winter 2019-20.csv",
-    # "trimet_stop_event - Fall 2018 v2.csv",
+    "2 trimet_stop_event - Aug 31 and Sep 1 2020.csv",
+    "2 trimet_stop_event - Fall 2019.csv",
+    "2 trimet_stop_event - Mar to Aug 2020.csv",
+    "2 trimet_stop_event - Spring 2019.csv",
+    "2 trimet_stop_event - Summer 2019.csv",
+    "2 trimet_stop_event - Winter 2018.csv",
+    "2 trimet_stop_event - Winter 2019-20.csv",
+    "trimet_stop_event - Fall 2018 v2.csv",
 ]
 
 

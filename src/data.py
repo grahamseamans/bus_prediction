@@ -7,6 +7,7 @@ import numbers
 from data_read_parse import get_data
 from data_types import Model_Params
 
+
 def get_dataloaders(mp: Model_Params):
     class bus_dataset(torch.utils.data.Dataset):
         def __init__(self, trips):
@@ -59,11 +60,11 @@ def get_dataloaders(mp: Model_Params):
             return np.stack(batch)
         else:
             number_subs = len(first)
-            holder = tuple(list() for _ in range(number_subs))
+            holder = [list() for _ in range(number_subs)]
             for example in batch:
                 for i, input in enumerate(example):
                     holder[i].append(input)
-            return tuple(stack_collate(x) for x in holder)
+            return [stack_collate(x) for x in holder]
 
     class JaxDataLoader(torch.utils.data.DataLoader):
         def __init__(
@@ -85,15 +86,16 @@ def get_dataloaders(mp: Model_Params):
                 dataset, batch_size, sampler=sampler, collate_fn=collate_fn, **kwargs
             )
 
-    worker_count = 1
+    worker_count = 12
 
-    trips, data_info = get_data(recompute=True, direction=1)
+    trips, data_info = get_data(recompute=False, direction=1)
     dataset = bus_dataset(trips)
+    print(f'There are a total of {len(dataset)} trips')
 
-    train = 0.8
-    val = 0.17
-    test = 0.03
-    assert round(train + val + test) == 1
+    train = 0.6
+    val = 0.2
+    test = 0.2
+    np.testing.assert_almost_equal(train + val + test, 1)
 
     datalen = len(dataset)
 
