@@ -1,159 +1,72 @@
-from optax._src.loss import huber_loss
-from data_types import Data_Info, Model_Params
+import os
+from data_types import Model_Params
 from matplotlib import pyplot as plt
 from data_read_parse import get_data
 from absl import app
-import haiku as hk
-import jax
-import jax.numpy as jnp
 import numpy as np
-import optax
 from typing import Tuple
 from data import get_dataloaders
-import flax.linen as nn
-import elegy
-from tqdm import tqdm
+import tensorflow as tf
+import tensorflow.keras.layers as layers
+import tensorflow.keras as keras
+from tensorflow.python.framework.ops import disable_eager_execution
 
 Batch = Tuple
 mp = Model_Params()
 
 
-# @compact
-# __call__(self, x, features):
-#   x = nn.Dense(features)(x)
-#   ...
+def main():
+    train, val, test, data_info = get_dataloaders(mp)
 
+    x_shapes, y_shapes = next(iter(train))
+    x_shapes = [x.shape[1:] for x in x_shapes]
+    y_shapes = [y.shape[1:] for y in y_shapes]
 
-def flatten(inputs):
-    """Flattens 'inputs', preserving the batch dim."""
-    return inputs.reshape((inputs.shape[0], -1))
+    ''' (non_category, category, r), label '''
 
-    # x = nn.Dense(300)(x)
-    # x = jax.nn.relu(x)
-    # x = nn.Dense(10)(x)
-    # return x
+    non_category_input = keras.Input(shape=x_shapes[0])
+    category_input = keras.Input(shape=x_shapes[1])
+    r_input = keras.Input(shape=x_shapes[2])
+    x = layers.BatchNormalization()(non_category_input)
+    x = layers.Flatten()(x)
+    x = layers.Dense(100, activation='elu')(x)
+    x = layers.Dense(data_info.trip_length)(x)
+    output = x
+    model = keras.Model(inputs=[non_category_input, category_input, r_input],
+                        outputs=[output])
 
+    keras.utils.plot_model(model, "model.png", show_shapes=True)
 
-class Net(hk.Module):
-    def __init__(self, data_info):
-        super().__init__()
-        self.data_info = data_info
-
-    def __call__(self, X, is_training) -> jnp.ndarray:
-        (non_category, category, r) = X
-        x = hk.BatchNorm(True, True, decay_rate=0.9)(non_category, is_training)
-        x = hk.Flatten()(x)
-        x = hk.Linear(300)(x)
-        x = jax.nn.relu(x)
-        x = hk.Linear(100)(x)
-        x = jax.nn.relu(x)
-        x = hk.Linear(self.data_info.trip_length)(x)
-        x = jnp.expand_dims(x, axis=-1)
-        return x
-
-
-def main(_):
-    train_loader, val_loader, test_loader, data_info = get_dataloaders(mp)
-    class Net(nn.Module):
-        # def __init__(self, data_info: Data_Info):
-        #     self.data_info = data_info
-
-        @nn.compact
-        def __call__(self, non_category, category, r):
-            x = nn.BatchNorm(True)(non_category)
-            x = flatten(x)
-            x = nn.Dense(300)(x)
-            x = nn.relu(x)
-            x = nn.Dense(100)(x)
-            x = nn.relu(x)
-            x = nn.Dense(data_info.trip_length)(x)
-            x = jnp.expand_dims(x, axis=-1)
-            return x
-
-    gradient_transform = optax.chain(
-            optax.clip_by_global_norm(1.0),
-            optax.scale_by_adam(),
-            # optax.scale_by_schedule(scheduler),
-            optax.scale(mp.learning_rate),
-            optax.scale(-1.0),
-        )
-
-    model = elegy.Model(
-        module=Net(),
-        loss=[
-            elegy.losses.Huber()
-            # elegy.losses.SparseCategoricalCrossentropy(from_logits=True),
-            # elegy.regularizers.GlobalL2(l=1e-5),
-        ],
-        # metrics='val_loss',
-        optimizer=gradient_transform,
+    model.compile(
+        optimizer=keras.optimizers.Adam(1e-3),
+        loss=keras.losses.Huber(),
+        metrics='mae',
     )
 
-    model.fit(x=train_loader, validation_data=val_loader, epochs=mp.epochs)
+    history = model.fit(train,
+                        validation_data=val,
+                        epochs=1,
+                        workers=8,
+                        use_multiprocessing=True)
 
-    # start_learning_rate = 1e-1
-    # scheduler = optax.exponential_decay(
-    #     init_value=start_learning_rate, transition_steps=1000, decay_rate=0.99
-    # )
-    # gradient_transform = optax.chain(
-    #     optax.clip_by_global_norm(1.0),
-    #     optax.scale_by_adam(),
-    #     # optax.scale_by_schedule(scheduler),
-    #     optax.scale(mp.learning_rate),
-    #     optax.scale(-1.0),
-    # )
-
-    # def _forward(data_info: Data_Info, X, is_training: bool) -> jnp.ndarray:
-    #     net = Net(data_info)
-    #     return net(X, is_training)
-
-    # Xs, ys = next(train_loader.__iter__())
-    # print(type(Xs))
-
-    # forward = hk.without_apply_rng(hk.transform_with_state(_forward))
-    # params, state = forward.init(jax.random.PRNGKey(42), data_info, Xs, True)
-    # opt_state = gradient_transform.init(params)
-
-    # @jax.jit
-    # def compute_loss(params, state, X, y, is_training=True):
-    #     y_pred, state = forward.apply(params, state, data_info, X, is_training)
-    #     return jnp.mean(optax.huber_loss(y_pred, y))
-
-    # def prog_bar(iterable, desc):
-    #     return tqdm(total=len(iterable), desc=desc, unit="batch")
-
-    # for epoch in range(mp.epochs):
-    #     train_loss = []
-    #     with prog_bar(train_loader, desc="training: ") as bar:
-    #         for batch_idx, (Xs, ys) in enumerate(train_loader):
-    #             loss = compute_loss(params, state, Xs, ys, True)
-    #             train_loss.append(loss)
-    #             grads = jax.grad(loss)(params, state, Xs, ys, True)
-    #             updates, opt_state = gradient_transform.update(grads, opt_state)
-    #             params = optax.apply_updates(params, updates)
-    #             bar.update(1)
-    #             bar.set_postfix({"loss": sum(train_loss) / batch_idx})
-    #     val_loss = []
-    #     with prog_bar(val_loader, desc="validation: ") as bar:
-    #         for i, (Xs, ys) in enumerate(val_loader):
-    #             val_loss.append(compute_loss(params, state, Xs, ys, False))
-    #             bar.update(1)
-    #             bar.set_postfix({"loss": sum(val_loss) / batch_idx})
+    Xs, ys = next(iter(test)) 
+    print(Xs)
+    preds = model.predict_on_batch(Xs)
+    for i, (X, pred, y) in enumerate(zip(Xs, preds, ys)):
+        print(X)
+        non_cats, cats, r = X
+        plt.rcParams["figure.figsize"] = [20, 4]
+        plt.scatter(x, pred, label="pred")
+        plt.scatter(x, y, label="y")
+        plt.scatter(list(range(r)), [0] * r, label="samp")
+        plt.legend()
+        plt.savefig(
+            os.path.join(os.getcwd(), "data", "plots", f"plot_{i}.png"))
+        plt.close()
 
 
 if __name__ == "__main__":
-    app.run(main)
-    # main("banana")
-
-"""
-I can just run preds on test_data that I get out of randomsplit
-that way I'll just get a massive np array that I can do whatever I want with?
-I'd need to figure out how to turn a DataSet into two numpy arrays...
-
-https://stackoverflow.com/questions/54897646/pytorch-datasets-converting-entire-dataset-to-numpy
-the second index is the labels
-"""
-
+    main()
 
 # plot_loader = val_loader
 # # preds = trainer.predict(model, plot_loader)

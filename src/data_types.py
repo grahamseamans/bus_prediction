@@ -20,5 +20,5 @@ class Model_Params:
     embedding_scale: int = 4
     kernel_size: int = 8
     conv_channels: int = 16
-    batch_size: int = 128
+    batch_size: int = 8
     epochs: int = 50
