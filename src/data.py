@@ -1,100 +1,101 @@
 import numpy as np
 import random
-
-from tensorflow.python.keras.backend import batch_dot
-from data_read_parse import get_data
-from data_types import Data_Info, Model_Params
-import tensorflow as tf
+import numbers
+from prep_cleaned import get_data
+import config
 
 
-class bus_dataset(tf.keras.utils.Sequence):
-    def __init__(self, trips: list, data_info: Data_Info, batch_size: int,
-                 shuffle: bool):
-        assert len(trips) > 0
-        self.trips = trips
-        self.data_info = data_info
-        self.datalen = len(self.trips)
-        self.batch_size = batch_size
-        self.shuffle = shuffle
-        self.on_epoch_end()
+def get_dataloaders():
+    class bus_dataset(torch.utils.data.Dataset):
+        def __init__(self, trips):
+            self.trips = trips
 
-        X, y = self.trip_to_np_arrays(self.trips[0])
-        self.X_shapes = [x.shape for x in X]
-        self.y_shapes = [y.shape for y in y]
+        def __len__(self):
+            return len(self.trips)
 
-    def __len__(self):
-        return self.datalen // self.batch_size
+        def __getitem__(self, idx):
+            trip = self.trips[idx]
+            r = random.randint(0, len(trip) - 1)
+            zeroed = config.cat_names + config.non_cat_names
+            trip.loc[trip.index < r, zeroed] = 0
 
-    def trip_to_np_arrays(self, trip):
-        r = random.randint(0, len(trip) - 1)
-        zeroed = self.data_info.cat_names + self.data_info.non_cat_names
-        trip.loc[trip.index > r, zeroed] = 0
+            non_category = trip[config.non_cat_names].to_numpy().astype(np.float32)
+            category = trip[config.cat_names].to_numpy().astype(np.int32)
+            r = np.array(r, dtype=np.int32)
+            label = trip[config.label_names].to_numpy().astype(np.float32)
 
-        non_category = trip[self.data_info.non_cat_names].to_numpy().astype(
-            np.float32)
-        category = trip[self.data_info.cat_names].to_numpy().astype(np.int32)
-        r = np.array(r, dtype=np.int32)
-        label = trip[self.data_info.label_names].to_numpy().astype(np.float32)
-        return [non_category, category, r], [label]
+            return [non_category, category, r], label
 
-    def __getitem__(self, idx):
-        indexes = self.indexes[idx * self.batch_size:(idx + 1) *
-                               self.batch_size]
-        X, y = self.__data_generation(indexes)
-        return X, y
+    # https://jax.readthedocs.io/en/latest/notebooks/Neural_Network_and_Data_Loading.html
+    def numpy_collate(batch):
+        if isinstance(batch[0], (np.ndarray, numbers.Number)):
+            return np.stack(batch)
+        elif isinstance(batch[0], (tuple, list)):
+            transposed = zip(*batch)
+            return [numpy_collate(samples) for samples in transposed]
+        else:
+            return np.array(batch)
 
-    def __data_generation(self, batch_idxs):
-        X = [np.empty((self.batch_size, *shape)) for shape in self.X_shapes]
-        y = [np.empty((self.batch_size, *shape)) for shape in self.y_shapes]
+    class NumpyLoader(torch.utils.data.DataLoader):
+        def __init__(
+            self,
+            dataset,
+            batch_size=1,
+            shuffle=False,
+            sampler=None,
+            batch_sampler=None,
+            num_workers=0,
+            pin_memory=False,
+            drop_last=False,
+            timeout=0,
+            worker_init_fn=None,
+        ):
+            super(self.__class__, self).__init__(
+                dataset,
+                batch_size=batch_size,
+                shuffle=shuffle,
+                sampler=sampler,
+                batch_sampler=batch_sampler,
+                num_workers=num_workers,
+                collate_fn=numpy_collate,
+                pin_memory=pin_memory,
+                drop_last=drop_last,
+                timeout=timeout,
+                worker_init_fn=worker_init_fn,
+            )
 
-        for i, trip_idx in enumerate(batch_idxs):
-            trip_x, trip_y = self.trip_to_np_arrays(self.trips[trip_idx])
-            for j in range(len(self.X_shapes)):
-                X[j][i] = trip_x[j]
-            for j in range(len(self.y_shapes)):
-                y[j][i] = trip_y[j]
+    worker_count = 12
 
-        return X, y
-
-    def on_epoch_end(self):
-        self.indexes = np.arange(self.datalen)
-        if self.shuffle == True:
-            np.random.shuffle(self.indexes)
-
-
-def get_dataloaders(mp: Model_Params):
-    trips, data_info = get_data(recompute=False, direction=1)
+    trips = get_data(recompute=False, direction=1)
+    dataset = bus_dataset(trips)
+    print(f"There are a total of {len(dataset)} trips")
 
     train = 0.6
     val = 0.2
     test = 0.2
     np.testing.assert_almost_equal(train + val + test, 1)
 
-    datalen = len(trips)
+    datalen = len(dataset)
+
     train_slice = slice(0, int(train * datalen))
-    val_slice = slice(int(train * datalen), int((train + val) * datalen))
-    test_slice = slice(int((train + val) * datalen), datalen)
+    val_slice = slice(int(train * datalen), int((val + train) * datalen))
+    test_slice = slice(int((val + train) * datalen), datalen)
 
     train = trips[train_slice]
     val = trips[val_slice]
     test = trips[test_slice]
 
-    print(type(trips[0]))
-    print(type(train[0]))
+    train_loader = NumpyLoader(
+        bus_dataset(train),
+        batch_size=config.batch_size,
+        shuffle=True,
+        num_workers=worker_count,
+    )
+    val_loader = NumpyLoader(
+        bus_dataset(val), batch_size=config.batch_size, num_workers=worker_count
+    )
+    test_loader = NumpyLoader(
+        bus_dataset(test), batch_size=config.batch_size, num_workers=worker_count
+    )
 
-    print(len(trips))
-    print(len(train))
-    print(len(val))
-    print(len(test))
-
-    train = bus_dataset(train,
-                        data_info,
-                        batch_size=mp.batch_size,
-                        shuffle=True)
-    val = bus_dataset(val, data_info, batch_size=mp.batch_size, shuffle=False)
-    test = bus_dataset(test,
-                       data_info,
-                       batch_size=mp.batch_size,
-                       shuffle=False)
-
-    return train, val, test, data_info
+    return train_loader, val_loader, test_loader, data_info

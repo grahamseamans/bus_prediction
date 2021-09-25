@@ -1,21 +1,18 @@
 import os
-from data_types import Data_Info
 import pandas as pd
 import numpy as np
 import pickle
 import random
 from sklearn.preprocessing import OrdinalEncoder
-# from tqdm import tqdm
-
-data_dir = os.path.join(os.getcwd(), "data")
-
+from tqdm import tqdm
+import config
 
 def get_data(recompute, direction):
+
+    data_dir = os.path.join(os.getcwd(), "data")
     processed_dir = os.path.join(data_dir, "processed_data")
     trips = None
     files = [f"{f}_direction_{direction}.npy" for f in ["trips", "cardinality"]]
-
-    data_info = Data_Info()
 
     cardinality = []
 
@@ -68,7 +65,7 @@ def get_data(recompute, direction):
         arrival_deviance                            int64
         arrive_deviance_departure_delta             int64
         """
-        data_info.cat_names = [
+        config.cat_names = [
             "direction",
             "door",
             "lift",
@@ -78,12 +75,12 @@ def get_data(recompute, direction):
             "train",
             "vehicle_number",
         ]
-        data_info.time_names = [
+        config.time_names = [
             "arrival_timestamp",
             "stop_timestamp",
             "leave_timestamp",
         ]
-        data_info.non_cat_names = [
+        config.non_cat_names = [
             "dwell",
             "estimated_load",
             "maximum_speed",
@@ -94,38 +91,38 @@ def get_data(recompute, direction):
             "arrival_deviance",
             "arrive_deviance_departure_delta",
         ]
-        data_info.label_names = ["arrival_deviance"]
+        config.label_names = ["arrival_deviance"]
 
-        df[data_info.time_names] = df[data_info.time_names].astype(int)
-        df[data_info.time_names] = (
-            df[data_info.time_names] - df[data_info.time_names].mean()
-        ) / df[data_info.time_names].std()
+        df[config.time_names] = df[config.time_names].astype(int)
+        df[config.time_names] = (
+            df[config.time_names] - df[config.time_names].mean()
+        ) / df[config.time_names].std()
 
         # just one timeststamp for now...
-        data_info.time_names = ["stop_timestamp"]
+        config.time_names = ["stop_timestamp"]
 
         enc = OrdinalEncoder()
-        df[data_info.cat_names] = enc.fit_transform(df[data_info.cat_names])
-        df[data_info.cat_names] = df[data_info.cat_names].astype(np.int32)
-        data_info.cardinality = [len(cat) for cat in enc.categories_]
+        df[config.cat_names] = enc.fit_transform(df[config.cat_names])
+        df[config.cat_names] = df[config.cat_names].astype(np.int32)
+        config.cardinality = [len(cat) for cat in enc.categories_]
 
-        # data_info.cardinality = []
-        # for category in data_info.cat_names:
-        #     data_info.cardinality.append(df[category].max())
+        # config.cardinality = []
+        # for category in config.cat_names:
+        #     config.cardinality.append(df[category].max())
 
-        df[data_info.non_cat_names] = df[data_info.non_cat_names].mask(
+        df[config.non_cat_names] = df[config.non_cat_names].mask(
             np.abs(
-                (df[data_info.non_cat_names] - df[data_info.non_cat_names].mean(axis=0))
-                / df[data_info.non_cat_names].std(axis=0)
+                (df[config.non_cat_names] - df[config.non_cat_names].mean(axis=0))
+                / df[config.non_cat_names].std(axis=0)
             )
             > 4,
             np.nan,
         )
-        df[data_info.non_cat_names] = df[data_info.non_cat_names].interpolate(axis=0)
-        df[data_info.non_cat_names] = df[data_info.non_cat_names].ffill(axis=0)
-        df[data_info.non_cat_names] = df[data_info.non_cat_names].bfill(axis=0)
+        df[config.non_cat_names] = df[config.non_cat_names].interpolate(axis=0)
+        df[config.non_cat_names] = df[config.non_cat_names].ffill(axis=0)
+        df[config.non_cat_names] = df[config.non_cat_names].bfill(axis=0)
 
-        data_info.non_cat_names.remove("arrival_deviance")
+        config.non_cat_names.remove("arrival_deviance")
 
         trips = df.groupby(["service_date", "train", "trip_number"])
         trips = [trip for _, trip in trips]
@@ -151,7 +148,7 @@ def get_data(recompute, direction):
         cannonical_stop_seq = list(sorted_stops[0][0])[
             1:-1
         ]  # LAST STOP WAS REGULARLY ~13 MINUTES EARLY...
-        data_info.trip_length = len(cannonical_stop_seq)
+        config.trip_length = len(cannonical_stop_seq)
 
         stop_order_dict = {}
         for i, stop in enumerate(cannonical_stop_seq):
@@ -165,7 +162,7 @@ def get_data(recompute, direction):
         ):
             trip = trip.drop_duplicates("location_id")
 
-            seq = np.array([cannonical_stop_seq, list(range(data_info.trip_length))])
+            seq = np.array([cannonical_stop_seq, list(range(config.trip_length))])
             seq = pd.DataFrame(seq.T, columns=["location_id", "idx"])
 
             trip = trip.merge(seq, how="outer", on="location_id")
@@ -176,17 +173,18 @@ def get_data(recompute, direction):
             trip = trip.fillna(0)  # essential! the join was (reasonably) making nans!
             trips[i] = trip
 
-        datas = [trips, data_info]
+        # datas = [trips, config]
 
-        for file_name, file in zip(files, datas):
-            file_path = os.path.join(processed_dir, file_name)
-            pickle.dump(file, open(file_path, "wb"))
+        # for file_name, file in zip(files, datas):
+        config.save()
+        file_path = os.path.join(processed_dir, 'trips.pkl')
+        pickle.dump(trips, open(file_path, "wb"))
 
     else:
-        arrays = []
-        for file_name in files:
-            file_path = os.path.join(processed_dir, file_name)
-            arrays.append(pickle.load(open(file_path, "rb")))
-        trips, data_info = arrays
+        # arrays = []
+        # for file_name in files:
+        file_path = os.path.join(processed_dir, 'trips.pkl')
+        trips = pickle.load(open(file_path, "rb"))
+        # trips, config = arrays
 
-    return trips, data_info
+    return trips
