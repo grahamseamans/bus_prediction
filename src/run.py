@@ -1,4 +1,3 @@
-from data_types import Data_Info, Model_Params
 from matplotlib import pyplot as plt
 from data_read_parse import get_data
 from absl import app
@@ -10,46 +9,69 @@ import optax
 from typing import Tuple
 from data import get_dataloaders
 from tqdm import tqdm
+import config
 
 Batch = Tuple
-mp = Model_Params()
+
+
+class GLU_Conv(hk.Module):
+    # def __init__(self, mp: Model_Params):
+    #     super(CustomModule, self).__init__()
+
+    def __call__(self, X):
+        x_1 = hk.Conv1D(
+            config.conv_channels,
+            config.kernel_size,
+            config.conv_stride,
+            config.dilation,
+            hk.pad.causal(config.kernel_size),
+        )(X)
+        x_2 = hk.Conv1D(
+            config.conv_channels,
+            config.kernel_size,
+            config.conv_stride,
+            config.dilation,
+            hk.pad.causal(config.kernel_size),
+        )(X)
+        x_2 = jax.nn.sigmoid(x_2)
+        return x_1 * x_2
 
 
 class CustomModule(hk.Module):
-    def __init__(self, data_info):
-        super(CustomModule, self).__init__()
-        self.data_info = data_info
+    # def __init__(self, data_info):
+    #     super(CustomModule, self).__init__()
+    #     self.data_info = data_info
 
-    def __call__(self, X, is_training: bool) -> jnp.ndarray:
+    def __call__(self, X, is_training):
         (non_category, category, r) = X
         x = hk.BatchNorm(True, True, decay_rate=0.9)(non_category, is_training)
+        x = GLU_Conv(x)
+        x = GLU_Conv(x)
         x = hk.Flatten()(x)
-        x = hk.Linear(300)(x)
-        x = jax.nn.relu(x)
-        x = hk.Linear(100)(x)
-        x = jax.nn.relu(x)
-        x = hk.Linear(self.data_info.trip_length)(x)
+        x = hk.Linear(128)(x)
+        x = jax.nn.elu(x)
+        x = hk.Linear(config.trip_length)(x)
+        x = jnp.expand_dims(x, -1)
         return x
 
 
 def main(_):
-    train_loader, val_loader, test_loader, data_info = get_dataloaders(mp)
+    train_loader, val_loader, test_loader, data_info = get_dataloaders()
 
-    start_learning_rate = 1e-1
-    scheduler = optax.exponential_decay(
-        init_value=start_learning_rate, transition_steps=1000, decay_rate=0.99
-    )
+    # start_learning_rate = 1e-1
+    # scheduler = optax.exponential_decay(
+    #     init_value=start_learning_rate, transition_steps=1000, decay_rate=0.99
+    # )
     gradient_transform = optax.chain(
         optax.clip_by_global_norm(1.0),
         optax.scale_by_adam(),
         # optax.scale_by_schedule(scheduler),
-        optax.scale(mp.learning_rate),
+        optax.scale(config.learning_rate),
         optax.scale(-1.0),
     )
-    # gradient_transform = optax.sgd(1e-3)
 
-    def _forward(data_info: Data_Info, X, is_training: bool) -> jnp.ndarray:
-        net = CustomModule(data_info)
+    def _forward(X, is_training: bool) -> jnp.ndarray:
+        net = CustomModule()
         return net(X, is_training)
 
     forward = hk.without_apply_rng(hk.transform_with_state(_forward))
@@ -57,37 +79,47 @@ def main(_):
     params, state = forward.init(jax.random.PRNGKey(42), data_info, Xs, True)
     opt_state = gradient_transform.init(params)
 
+    def loss(params, state, X, y):
+        y_pred, state = forward.apply(params, state, data_info, X, is_training=True)
+        return jnp.mean(optax.huber_loss(y_pred, y))
+
     @jax.jit
-    def compute_loss(params, state, X, y, is_training=True):
-        y_pred, state = forward.apply(params, state, data_info, X, is_training)
-        y, y_pred = [jnp.squeeze(x) for x in [y, y_pred]]
+    def train(params, state, opt_state, Xs, ys):
+        grads = jax.grad(loss)(params, state, Xs, ys)
+        updates, opt_state = gradient_transform.update(grads, opt_state)
+        params = optax.apply_updates(params, updates)
+        return params, state, opt_state
+
+    @jax.jit
+    def metric(params, state, X, y):
+        y_pred, state = forward.apply(params, state, data_info, X, False)
         return jnp.mean(optax.huber_loss(y_pred, y))
 
     def prog_bar(iterable, desc):
-        return tqdm(total=len(iterable), desc=desc, unit="batch")
+        return tqdm(
+            iterable, total=len(iterable), desc=desc, unit="batch", mininterval=0.5
+        )
 
-    for epoch in range(mp.epochs):
-        train_loss = []
-        with prog_bar(train_loader, desc="training: ") as bar:
-            for batch_idx, (Xs, ys) in enumerate(train_loader):
-                loss = compute_loss(params, state, Xs, ys, True)
-                train_loss.append(loss)
-                grads = jax.grad(loss)(params, state, Xs, ys, True)
-                updates, opt_state = gradient_transform.update(grads, opt_state)
-                params = optax.apply_updates(params, updates)
-                bar.update(1)
-                bar.set_postfix({'loss': sum(train_loss)/batch_idx})
-        val_loss = []
-        with prog_bar(val_loader, desc="validation: ") as bar:
-            for i, (Xs, ys) in enumerate(val_loader):
-                val_loss.append(compute_loss(params, state, Xs, ys, False))
-                bar.update(1)
-                bar.set_postfix({'loss': sum(val_loss)/batch_idx})
+    for epoch in range(config.epochs):
+        train_loss = 0
+        for Xs, ys in prog_bar(train_loader, "training"):
+            params, state, opt_state = train(params, state, opt_state, Xs, ys)
+            train_loss += metric(params, state, Xs, ys)
+        val_loss = 0
+        for Xs, ys in prog_bar(val_loader, "validation"):
+            val_loss += metric(params, state, Xs, ys)
+        print(
+            f"epoch: {epoch} train loss avg is {train_loss / len(train_loader):.2f} and val loss avg is {val_loss / len(val_loader):.2f}"
+        )
+        # bar.update(1)
+        # bar.set_postfix({"loss": f"{val_loss / batch_idx:.2f}"})
+        # with prog_bar(train_loader, desc="training") as bar:
+        # for batch_idx, (Xs, ys) in prog_bar(enumerate(train_loader)):
 
 
 if __name__ == "__main__":
-    # app.run(main)
-    main("banana")
+    app.run(main)
+    # main("banana")
 
 """
 I can just run preds on test_data that I get out of randomsplit
