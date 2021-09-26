@@ -4,3 +4,4 @@ lightning_logs/
 .vscode/
 test.py
 test_tester.py
+__pycache__/

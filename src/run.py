@@ -1,19 +1,23 @@
 from matplotlib import pyplot as plt
-from data_read_parse import get_data
+from data import get_dataloaders
 from absl import app
 import numpy as np
 from typing import Tuple
-from data import get_dataloaders
 from tqdm import tqdm
 import config
+import haiku as hk
+import optax
+import jax
+import jax.numpy as jnp
+import os
 
 Batch = Tuple
 
+os.environ["XLA_PYTHON_CLIENT_PREALLOCATE"] = 'false'
+# %env XLA_PYTHON_CLIENT_PREALLOCATE=false
+
 
 class GLU_Conv(hk.Module):
-    # def __init__(self, mp: Model_Params):
-    #     super(CustomModule, self).__init__()
-
     def __call__(self, X):
         x_1 = hk.Conv1D(
             config.conv_channels,
@@ -34,15 +38,11 @@ class GLU_Conv(hk.Module):
 
 
 class CustomModule(hk.Module):
-    # def __init__(self, data_info):
-    #     super(CustomModule, self).__init__()
-    #     self.data_info = data_info
-
     def __call__(self, X, is_training):
         (non_category, category, r) = X
         x = hk.BatchNorm(True, True, decay_rate=0.9)(non_category, is_training)
-        x = GLU_Conv(x)
-        x = GLU_Conv(x)
+        # x = GLU_Conv(x)
+        # x = GLU_Conv(x)
         x = hk.Flatten()(x)
         x = hk.Linear(128)(x)
         x = jax.nn.elu(x)
@@ -50,10 +50,11 @@ class CustomModule(hk.Module):
         x = jnp.expand_dims(x, -1)
         return x
 
-    ''' (non_category, category, r), label '''
+    """ (non_category, category, r), label """
 
-def main(_):
-    train_loader, val_loader, test_loader, data_info = get_dataloaders()
+
+def main():
+    train_loader, val_loader, test_loader = get_dataloaders()
 
     # start_learning_rate = 1e-1
     # scheduler = optax.exponential_decay(
@@ -73,23 +74,23 @@ def main(_):
 
     forward = hk.without_apply_rng(hk.transform_with_state(_forward))
     Xs, ys = next(iter(val_loader))
-    params, state = forward.init(jax.random.PRNGKey(42), data_info, Xs, True)
+    params, state = forward.init(jax.random.PRNGKey(42), Xs, True)
     opt_state = gradient_transform.init(params)
 
-    def loss(params, state, X, y):
-        y_pred, state = forward.apply(params, state, data_info, X, is_training=True)
+    def train_loss(params, state, X, y):
+        y_pred, state = forward.apply(params, state, X, is_training=True)
         return jnp.mean(optax.huber_loss(y_pred, y))
 
     @jax.jit
     def train(params, state, opt_state, Xs, ys):
-        grads = jax.grad(loss)(params, state, Xs, ys)
+        grads = jax.grad(train_loss)(params, state, Xs, ys)
         updates, opt_state = gradient_transform.update(grads, opt_state)
         params = optax.apply_updates(params, updates)
         return params, state, opt_state
 
     @jax.jit
     def metric(params, state, X, y):
-        y_pred, state = forward.apply(params, state, data_info, X, False)
+        y_pred, state = forward.apply(params, state, X, False)
         return jnp.mean(optax.huber_loss(y_pred, y))
 
     def prog_bar(iterable, desc):
@@ -115,8 +116,9 @@ def main(_):
 
 
 if __name__ == "__main__":
-    app.run(main)
-    # main("banana")
+    # app.run(main)
+    main()
+
 
 """
 I can just run preds on test_data that I get out of randomsplit

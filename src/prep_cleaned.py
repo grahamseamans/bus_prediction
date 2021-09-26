@@ -7,21 +7,19 @@ from sklearn.preprocessing import OrdinalEncoder
 from tqdm import tqdm
 import config
 
-def get_data(recompute, direction):
+def get_data():
 
     data_dir = os.path.join(os.getcwd(), "data")
     processed_dir = os.path.join(data_dir, "processed_data")
-    trips = None
-    files = [f"{f}_direction_{direction}.npy" for f in ["trips", "cardinality"]]
+    file = f"trips_direction_{config.trip_direction}.npy"
 
-    cardinality = []
-
-    if recompute:
+    if config.recompute:
 
         pickle_path = os.path.join(data_dir, "mega_pickle")
         df = pd.read_pickle(pickle_path)
+        df = df.head(1000000)
 
-        df = df[df["direction"] == direction]
+        df = df[df["direction"] == config.trip_direction]
 
         df = df.sort_values(["service_date", "train", "trip_number", "stop_time"])
         df = df.reset_index(drop=True)
@@ -177,13 +175,13 @@ def get_data(recompute, direction):
 
         # for file_name, file in zip(files, datas):
         config.save()
-        file_path = os.path.join(processed_dir, 'trips.pkl')
+        file_path = os.path.join(processed_dir, file)
         pickle.dump(trips, open(file_path, "wb"))
 
     else:
         # arrays = []
         # for file_name in files:
-        file_path = os.path.join(processed_dir, 'trips.pkl')
+        file_path = os.path.join(processed_dir, file)
         trips = pickle.load(open(file_path, "rb"))
         # trips, config = arrays
 

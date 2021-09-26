@@ -3,6 +3,7 @@ import random
 import numbers
 from prep_cleaned import get_data
 import config
+import torch
 
 
 def get_dataloaders():
@@ -66,7 +67,7 @@ def get_dataloaders():
 
     worker_count = 12
 
-    trips = get_data(recompute=False, direction=1)
+    trips = get_data()
     dataset = bus_dataset(trips)
     print(f"There are a total of {len(dataset)} trips")
 
@@ -98,4 +99,4 @@ def get_dataloaders():
         bus_dataset(test), batch_size=config.batch_size, num_workers=worker_count
     )
 
-    return train_loader, val_loader, test_loader, data_info
+    return train_loader, val_loader, test_loader
